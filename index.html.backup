@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>イベント収支報告・精算書作成アプリ v2.0</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel Standalone -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- html2canvas -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
+    <style>
+        /* 通常表示時は印刷エリアを非表示 */
+        .print-report,
+        .print-single-receipt,
+        .print-batch-receipts {
+            display: none;
+        }
+        
+        /* 印刷用スタイル */
+        @media print {
+            /* 画面コンテンツを非表示 */
+            .screen-only {
+                display: none !important;
+            }
+            
+            /* デフォルトですべての印刷エリアを表示 */
+            .print-area {
+                display: block !important;
+                visibility: visible !important;
+                position: static !important;
+                width: 100% !important;
+                height: auto !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                background: white !important;
+            }
+            
+            /* 非アクティブなエリアを非表示 */
+            .print-area[data-print-active="false"] {
+                display: none !important;
+            }
+            
+            @page {
+                size: A4 portrait;
+                margin: 10mm;
+            }
+            
+            .receipt-batch-page {
+                page-break-after: always;
+            }
+            
+            .receipt-batch-page:last-child {
+                page-break-after: auto;
+            }
+            
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+        }
+        
+        .receipt-template {
+            position: fixed;
+            left: -9999px;
+            width: 600px;
+            background: white;
+            padding: 40px;
+            font-family: 'Yu Mincho', 'Hiragino Mincho Pro', serif;
+        }
+        
+        /* 印刷エリアのデフォルトスタイル */
+        .print-area {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+            z-index: 9999;
+            overflow: auto;
+            padding: 20px;
+        }
+        
+        /* 印刷準備中は表示 */
+        .print-area[data-print-active="true"] {
+            display: block;
+        }
+        
+        /* 横長領収書（A4縦・4人/枚） */
+        .receipt-horizontal {
+            width: 100%;
+            height: 55mm;
+            border: 2px solid #333;
+            border-bottom: 1px dashed #666;
+            padding: 2mm 4mm;
+            background: white;
+            font-family: 'Yu Mincho', 'Hiragino Mincho Pro', serif;
+            box-sizing: border-box;
+            page-break-inside: avoid;
+            margin-bottom: 0;
+        }
+        
+        .receipt-horizontal:first-child {
+            border-top: 2px solid #333;
+        }
+        
+        .receipt-horizontal:last-child {
+            border-bottom: 2px solid #333;
+        }
+        
+        .receipt-horizontal h1 {
+            text-align: center;
+            font-size: 15px;
+            margin-bottom: 2px;
+            letter-spacing: 3px;
+            font-weight: bold;
+        }
+        
+        .receipt-horizontal .receipt-row {
+            border-bottom: 1px solid #333;
+            padding: 1.5px 0;
+            margin-bottom: 2px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .receipt-horizontal .receipt-label {
+            display: inline-block;
+            width: 60px;
+            font-weight: normal;
+            flex-shrink: 0;
+        }
+        
+        .receipt-horizontal .receipt-value {
+            font-weight: bold;
+            flex: 1;
+        }
+        
+        .receipt-horizontal .amount-row {
+            font-size: 12px;
+            padding: 2px 0;
+        }
+        
+        .receipt-horizontal .footer-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-top: 3px;
+            font-size: 10px;
+        }
+        
+        .receipt-horizontal .stamp-box-small {
+            width: 28px;
+            height: 28px;
+            border: 1.5px solid #333;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 7px;
+            color: #333;
+        }
+        
+        .receipt-horizontal .note-text {
+            font-size: 9px;
+            margin: 2.5px 0;
+        }
+        
+        /* 一括印刷用レイアウト（縦並び） */
+        .receipt-batch-page {
+            page-break-after: always;
+        }
+        
+        .receipt-batch-page:last-child {
+            page-break-after: auto;
+        }
+    </style>
+<!-- Updated: 1765348676 -->
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState } = React;
+        
+        const App = () => {
+            // 基本情報（デフォルト値設定）
+            const [eventName, setEventName] = useState('組合イベント');
+            const [eventDate, setEventDate] = useState('');
+            const [organizer, setOrganizer] = useState('横浜建設一般労働組合　保土ヶ谷西支部　担当：松崎　昇');
+            
+            // 収入（参加費）
+            const [incomes, setIncomes] = useState([]);
+            const [newIncome, setNewIncome] = useState({ name: '', amount: '' });
+            const [editingIncomeId, setEditingIncomeId] = useState(null);
+            const [commonAmount, setCommonAmount] = useState(''); // 全員同一金額
+            
+            // 支出（立替払い）
+            const [expenses, setExpenses] = useState([]);
+            const [newExpense, setNewExpense] = useState({ payee: '', item: '店舗への支払い', amount: '' });
+            const [editingExpenseId, setEditingExpenseId] = useState(null);
+            
+            // 印刷モード管理
+            const [printMode, setPrintMode] = useState(null); // 'report', 'single', 'batch'
+            const [printTargetIncome, setPrintTargetIncome] = useState(null);
+            
+            // 収入追加/編集
+            const handleAddIncome = () => {
+                if (!newIncome.name) {
+                    alert('参加者名を入力してください');
+                    return;
+                }
+                
+                // 金額が空の場合は0として扱う
+                const amount = newIncome.amount ? parseInt(newIncome.amount) : 0;
+                
+                if (editingIncomeId) {
+                    setIncomes(incomes.map(inc => 
+                        inc.id === editingIncomeId 
+                            ? { ...inc, name: newIncome.name, amount: amount }
+                            : inc
+                    ));
+                    setEditingIncomeId(null);
+                } else {
+                    const income = {
+                        id: Date.now(),
+                        name: newIncome.name,
+                        amount: amount,
+                        receiptIssued: false
+                    };
+                    setIncomes([...incomes, income]);
+                }
+                setNewIncome({ name: '', amount: '' });
+            };
+            
+            // 収入編集開始
+            const startEditIncome = (income) => {
+                setNewIncome({ name: income.name, amount: income.amount.toString() });
+                setEditingIncomeId(income.id);
+            };
+            
+            // 収入削除
+            const deleteIncome = (id) => {
+                if (confirm('削除してよろしいですか？')) {
+                    setIncomes(incomes.filter(inc => inc.id !== id));
+                }
+            };
+            
+            // 支出追加/編集
+            const handleAddExpense = () => {
+                if (!newExpense.payee || !newExpense.item || !newExpense.amount) {
+                    alert('すべての項目を入力してください');
+                    return;
+                }
+                
+                if (editingExpenseId) {
+                    setExpenses(expenses.map(exp => 
+                        exp.id === editingExpenseId 
+                            ? { ...exp, payee: newExpense.payee, item: newExpense.item, amount: parseInt(newExpense.amount) }
+                            : exp
+                    ));
+                    setEditingExpenseId(null);
+                } else {
+                    const expense = {
+                        id: Date.now(),
+                        payee: newExpense.payee,
+                        item: newExpense.item,
+                        amount: parseInt(newExpense.amount)
+                    };
+                    setExpenses([...expenses, expense]);
+                }
+                setNewExpense({ payee: '', item: '店舗への支払い', amount: '' });
+            };
+            
+            // 支出編集開始
+            const startEditExpense = (expense) => {
+                setNewExpense({ payee: expense.payee, item: expense.item, amount: expense.amount.toString() });
+                setEditingExpenseId(expense.id);
+            };
+            
+            // 支出削除
+            const deleteExpense = (id) => {
+                if (confirm('削除してよろしいですか？')) {
+                    setExpenses(expenses.filter(exp => exp.id !== id));
+                }
+            };
+            
+            // 合計計算
+            const totalIncome = incomes.reduce((sum, inc) => sum + inc.amount, 0);
+            const totalExpense = expenses.reduce((sum, exp) => sum + exp.amount, 0);
+            const balance = totalExpense - totalIncome;
+            
+            // 領収書コンポーネント（横長・A4縦3人分）
+            const ReceiptHorizontal = ({ income }) => (
+                <div className="receipt-horizontal">
+                    <h1>領収書</h1>
+                    <div className="receipt-row">
+                        <span className="receipt-label">宛名:</span>
+                        <span className="receipt-value">{income.name} 様</span>
+                    </div>
+                    <div className="receipt-row amount-row">
+                        <span className="receipt-label">金額:</span>
+                        <span className="receipt-value">¥{income.amount.toLocaleString()}-</span>
+                    </div>
+                    <div className="receipt-row">
+                        <span className="receipt-label">但し書き:</span>
+                        <span className="receipt-value">{eventName || 'イベント'} 参加費として</span>
+                    </div>
+                    <div className="note-text">
+                        上記の金額を正に領収いたしました。
+                    </div>
+                    <div className="footer-section">
+                        <div>
+                            <div>日付: {eventDate || new Date().toLocaleDateString('ja-JP')}</div>
+                            <div style={{ marginTop: '10px' }}>発行者: {organizer || '幹事'}</div>
+                        </div>
+                        <div className="stamp-box-small">印</div>
+                    </div>
+                </div>
+            );
+            
+            // 領収書生成・共有（画像化）
+            const generateReceipt = async (income) => {
+                if (income.receiptIssued && !confirm('既に領収書を発行済みです。再発行しますか？')) {
+                    return;
+                }
+                
+                // 領収書HTMLを動的に生成
+                const receiptElement = document.createElement('div');
+                receiptElement.className = 'receipt-template';
+                receiptElement.innerHTML = `
+                    <div style="border: 3px double #333; padding: 30px; background: white;">
+                        <h1 style="text-align: center; font-size: 32px; margin-bottom: 30px; letter-spacing: 8px;">領収書</h1>
+                        <div style="margin-bottom: 20px;">
+                            <div style="border-bottom: 1px solid #333; padding: 10px 0; font-size: 20px;">
+                                <span style="display: inline-block; width: 100px;">宛名:</span>
+                                <span style="font-weight: bold;">${income.name} 様</span>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 30px;">
+                            <div style="border-bottom: 1px solid #333; padding: 10px 0; font-size: 24px;">
+                                <span style="display: inline-block; width: 100px;">金額:</span>
+                                <span style="font-weight: bold;">¥${income.amount.toLocaleString()}-</span>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 30px;">
+                            <div style="border-bottom: 1px solid #333; padding: 10px 0;">
+                                <span style="display: inline-block; width: 100px;">但し書き:</span>
+                                <span>${eventName || 'イベント'} 参加費として</span>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 20px;">
+                            <div style="padding: 10px 0;">
+                                <span>上記の金額を正に領収いたしました。</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 40px;">
+                            <div>
+                                <div style="margin-bottom: 10px;">日付: ${eventDate || new Date().toLocaleDateString('ja-JP')}</div>
+                                <div style="margin-top: 20px;">
+                                    <div style="margin-bottom: 5px;">発行者: ${organizer || '幹事'}</div>
+                                </div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="width: 60px; height: 60px; border: 2px solid #333; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px;">印</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(receiptElement);
+                
+                try {
+                    // html2canvasで画像化
+                    const canvas = await html2canvas(receiptElement, {
+                        backgroundColor: '#ffffff',
+                        scale: 2,
+                        logging: false
+                    });
+                    
+                    // Canvasを画像に変換
+                    canvas.toBlob(async (blob) => {
+                        const file = new File([blob], `領収書_${income.name}.png`, { type: 'image/png' });
+                        
+                        // Web Share APIが使用可能か確認
+                        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+                            try {
+                                await navigator.share({
+                                    title: '領収書',
+                                    text: `${income.name}様 領収書`,
+                                    files: [file]
+                                });
+                                
+                                // 共有成功後、ステータスを更新
+                                setIncomes(incomes.map(inc => 
+                                    inc.id === income.id ? { ...inc, receiptIssued: true } : inc
+                                ));
+                                alert('領収書を共有しました');
+                            } catch (err) {
+                                if (err.name !== 'AbortError') {
+                                    console.error('共有エラー:', err);
+                                    downloadImage(canvas, income);
+                                }
+                            }
+                        } else {
+                            // Web Share API非対応の場合はダウンロード
+                            downloadImage(canvas, income);
+                        }
+                    }, 'image/png');
+                    
+                } catch (error) {
+                    console.error('領収書生成エラー:', error);
+                    alert('領収書の生成に失敗しました');
+                } finally {
+                    document.body.removeChild(receiptElement);
+                }
+            };
+            
+            // 画像ダウンロード処理
+            const downloadImage = (canvas, income) => {
+                const link = document.createElement('a');
+                link.download = `領収書_${income.name}.png`;
+                link.href = canvas.toDataURL();
+                link.click();
+                
+                // ダウンロード後、ステータスを更新
+                setIncomes(incomes.map(inc => 
+                    inc.id === income.id ? { ...inc, receiptIssued: true } : inc
+                ));
+                alert('領収書をダウンロードしました');
+            };
+            
+            // A4報告書印刷
+            const handlePrintReport = () => {
+                if (!eventName || !eventDate || !organizer) {
+                    alert('基本情報をすべて入力してください');
+                    return;
+                }
+                
+                // 印刷用HTMLを生成
+                const printContent = `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>イベント収支報告書</title>
+                        <style>
+                            body { font-family: sans-serif; margin: 0; padding: 20px; }
+                            @media print {
+                                @page { size: A4 portrait; margin: 15mm; }
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <div style="min-height: 50vh;">
+                            <h1 style="font-size: 24px; font-weight: bold; text-align: center; margin-bottom: 24px;">イベント収支報告書</h1>
+                            
+                            <div style="margin-bottom: 16px;">
+                                <p style="margin-bottom: 8px;"><strong>イベント名:</strong> ${eventName}</p>
+                                <p style="margin-bottom: 8px;"><strong>開催日:</strong> ${eventDate}</p>
+                                <p style="margin-bottom: 8px;"><strong>主催者:</strong> ${organizer}</p>
+                            </div>
+                            
+                            <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">収入明細</h2>
+                            <div style="border: 1px solid #000; padding: 8px; margin-bottom: 16px; font-size: 14px;">
+                                ${incomes.map((income, index) => 
+                                    `${income.name}(¥${income.amount.toLocaleString()})${index < incomes.length - 1 ? '、' : ''}`
+                                ).join('')}
+                                <div style="margin-top: 8px; font-weight: bold; padding-top: 8px; border-top: 1px solid #000;">
+                                    合計: ¥${totalIncome.toLocaleString()}
+                                </div>
+                            </div>
+                            
+                            <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">支出明細</h2>
+                            <table style="width: 100%; margin-bottom: 16px; font-size: 14px; border-collapse: collapse;">
+                                <thead>
+                                    <tr>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: left;">支払先</th>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: left;">品目</th>
+                                        <th style="border: 1px solid #000; padding: 8px; text-align: right;">金額</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${expenses.map(expense => `
+                                        <tr>
+                                            <td style="border: 1px solid #000; padding: 8px;">${expense.payee}</td>
+                                            <td style="border: 1px solid #000; padding: 8px;">${expense.item}</td>
+                                            <td style="border: 1px solid #000; padding: 8px; text-align: right;">¥${expense.amount.toLocaleString()}</td>
+                                        </tr>
+                                    `).join('')}
+                                    <tr style="font-weight: bold;">
+                                        <td style="border: 1px solid #000; padding: 8px;" colspan="2">合計</td>
+                                        <td style="border: 1px solid #000; padding: 8px; text-align: right;">¥${totalExpense.toLocaleString()}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            
+                            <div style="background: #f3f4f6; padding: 12px; margin-bottom: 16px;">
+                                <p style="font-size: 18px; font-weight: bold;">
+                                    ${balance >= 0 ? '請求額' : '返納額'}: ¥${Math.abs(balance).toLocaleString()}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <div style="height: 45vh; border-top: 2px dashed #999; padding-top: 20px;">
+                            <h2 style="text-align: center; font-size: 18px; font-weight: bold; margin-bottom: 16px;">領収書貼付欄</h2>
+                            <div style="border: 2px solid #333; height: 90%; padding: 10px;">
+                                <p style="font-size: 14px; color: #666;">※ 立替払いの領収書をこちらに貼付してください</p>
+                            </div>
+                        </div>
+                        
+                        <script>
+                            window.onload = () => {
+                                setTimeout(() => {
+                                    window.print();
+                                    setTimeout(() => window.close(), 500);
+                                }, 500);
+                            };
+                        </script>
+                    </body>
+                    </html>
+                `;
+                
+                // 新しいウィンドウで開いて印刷
+                const printWindow = window.open('', '_blank');
+                printWindow.document.write(printContent);
+                printWindow.document.close();
+            };
+            
+            // 個別領収書印刷（A4縦・1人）
+            const handlePrintSingleReceipt = (income) => {
+                const printContent = `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>領収書_${income.name}</title>
+                        <style>
+                            body { font-family: 'Yu Mincho', 'Hiragino Mincho Pro', serif; margin: 0; padding: 8mm; }
+                            @media print {
+                                @page { size: A4 portrait; margin: 10mm; }
+                            }
+                            .receipt {
+                                width: 100%;
+                                border: 2px solid #333;
+                                padding: 5mm;
+                                background: white;
+                            }
+                            h1 { text-align: center; font-size: 20px; margin-bottom: 5mm; letter-spacing: 4px; }
+                            .row { border-bottom: 1px solid #333; padding: 3mm 0; margin-bottom: 3mm; font-size: 12px; }
+                            .label { display: inline-block; width: 70px; }
+                            .value { font-weight: bold; }
+                            .amount { font-size: 16px; }
+                            .note { text-align: center; margin: 5mm 0; font-size: 11px; }
+                            .footer { display: flex; justify-content: space-between; margin-top: 5mm; }
+                            .stamp { width: 40px; height: 40px; border: 2px solid #333; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="receipt">
+                            <h1>領収書</h1>
+                            <div class="row">
+                                <span class="label">宛名:</span>
+                                <span class="value">${income.name} 様</span>
+                            </div>
+                            <div class="row amount">
+                                <span class="label">金額:</span>
+                                <span class="value">¥${income.amount.toLocaleString()}-</span>
+                            </div>
+                            <div class="row">
+                                <span class="label">但し書き:</span>
+                                <span class="value">${eventName || 'イベント'} 参加費として</span>
+                            </div>
+                            <div class="note">
+                                上記の金額を正に領収いたしました。
+                            </div>
+                            <div class="footer">
+                                <div>
+                                    <div>日付: ${eventDate || new Date().toLocaleDateString('ja-JP')}</div>
+                                    <div style="margin-top: 3mm;">発行者: ${organizer || '幹事'}</div>
+                                </div>
+                                <div class="stamp">印</div>
+                            </div>
+                        </div>
+                        
+                        <script>
+                            window.onload = () => {
+                                setTimeout(() => {
+                                    window.print();
+                                    setTimeout(() => window.close(), 500);
+                                }, 500);
+                            };
+                        </script>
+                    </body>
+                    </html>
+                `;
+                
+                const printWindow = window.open('', '_blank');
+                printWindow.document.write(printContent);
+                printWindow.document.close();
+                
+                // 印刷後、発行済みに更新
+                setTimeout(() => {
+                    setIncomes(incomes.map(inc => 
+                        inc.id === income.id ? { ...inc, receiptIssued: true } : inc
+                    ));
+                }, 1000);
+            };
+            
+            // 一括領収書印刷（A4縦・4人/枚）
+            const handlePrintBatchReceipts = () => {
+                if (incomes.length === 0) {
+                    alert('参加者が登録されていません');
+                    return;
+                }
+                
+                // 4人ごとにページ分割
+                const pages = [];
+                for (let i = 0; i < incomes.length; i += 4) {
+                    pages.push(incomes.slice(i, i + 4));
+                }
+                
+                const printContent = `
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="UTF-8">
+                        <title>領収書一括</title>
+                        <style>
+                            body { font-family: 'Yu Mincho', 'Hiragino Mincho Pro', serif; margin: 0; padding: 0; }
+                            @media print {
+                                @page { size: A4 portrait; margin: 8mm; }
+                                .page { page-break-after: always; }
+                                .page:last-child { page-break-after: auto; }
+                            }
+                            .page { padding: 5mm; }
+                            .receipt {
+                                width: 100%;
+                                height: 55mm;
+                                border: 2px solid #333;
+                                border-bottom: 1px dashed #666;
+                                padding: 2mm 4mm;
+                                background: white;
+                                box-sizing: border-box;
+                                page-break-inside: avoid;
+                                margin-bottom: 0;
+                            }
+                            .receipt:first-child { border-top: 2px solid #333; }
+                            .receipt:last-child { border-bottom: 2px solid #333; }
+                            h1 { text-align: center; font-size: 15px; margin-bottom: 2mm; letter-spacing: 3px; font-weight: bold; }
+                            .row { border-bottom: 1px solid #333; padding: 1.5mm 0; margin-bottom: 2mm; font-size: 10px; }
+                            .label { display: inline-block; width: 60px; }
+                            .value { font-weight: bold; }
+                            .amount { font-size: 12px; }
+                            .note { text-align: center; font-size: 9px; margin: 2mm 0; }
+                            .footer { display: flex; justify-content: space-between; }
+                            .stamp { width: 28px; height: 28px; border: 1.5px solid #333; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 7px; }
+                        </style>
+                    </head>
+                    <body>
+                        ${pages.map(pageIncomes => `
+                            <div class="page">
+                                ${pageIncomes.map(income => `
+                                    <div class="receipt">
+                                        <h1>領収書</h1>
+                                        <div class="row">
+                                            <span class="label">宛名:</span>
+                                            <span class="value">${income.name} 様</span>
+                                        </div>
+                                        <div class="row amount">
+                                            <span class="label">金額:</span>
+                                            <span class="value">¥${income.amount.toLocaleString()}-</span>
+                                        </div>
+                                        <div class="row">
+                                            <span class="label">但し書き:</span>
+                                            <span class="value">${eventName || 'イベント'} 参加費として</span>
+                                        </div>
+                                        <div class="note">
+                                            上記の金額を正に領収いたしました。
+                                        </div>
+                                        <div class="footer">
+                                            <div style="font-size: 9px;">
+                                                <div>日付: ${eventDate || new Date().toLocaleDateString('ja-JP')}</div>
+                                                <div style="margin-top: 1mm;">発行者: ${organizer || '幹事'}</div>
+                                            </div>
+                                            <div class="stamp">印</div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `).join('')}
+                        
+                        <script>
+                            window.onload = () => {
+                                setTimeout(() => {
+                                    window.print();
+                                    setTimeout(() => window.close(), 500);
+                                }, 500);
+                            };
+                        </script>
+                    </body>
+                    </html>
+                `;
+                
+                const printWindow = window.open('', '_blank');
+                printWindow.document.write(printContent);
+                printWindow.document.close();
+                
+                // 印刷後、全員を発行済みに更新
+                setTimeout(() => {
+                    setIncomes(incomes.map(inc => ({ ...inc, receiptIssued: true })));
+                }, 1000);
+            };
+            
+            // 4人ごとにページ分割
+            const receiptPages = [];
+            for (let i = 0; i < incomes.length; i += 4) {
+                receiptPages.push(incomes.slice(i, i + 4));
+            }
+            
+            // 全員同一金額を設定
+            const applyCommonAmount = () => {
+                if (!commonAmount) {
+                    alert('金額を入力してください');
+                    return;
+                }
+                const amount = parseInt(commonAmount);
+                if (incomes.length === 0) {
+                    alert('参加者を先に追加してください');
+                    return;
+                }
+                if (confirm(`全員に¥${amount.toLocaleString()}を設定しますか？`)) {
+                    setIncomes(incomes.map(inc => ({ ...inc, amount: amount })));
+                    alert('全員の金額を更新しました');
+                }
+            };
+            
+            return (
+                <>
+                    <div className="screen-only">
+                        <div className="max-w-6xl mx-auto p-4">
+                            {/* ヘッダー */}
+                            <div className="bg-blue-600 text-white p-4 rounded-t-lg">
+                                <h1 className="text-2xl font-bold">📊 イベント収支報告・精算書作成</h1>
+                            </div>
+                            
+                            {/* メインコンテンツ */}
+                            <div className="bg-white shadow-lg rounded-b-lg p-6">
+                                {/* 基本情報入力 */}
+                                <div className="mb-6">
+                                    <h2 className="text-lg font-bold mb-4">📝 基本情報</h2>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <input
+                                            type="text"
+                                            placeholder="イベント名"
+                                            value={eventName}
+                                            onChange={(e) => setEventName(e.target.value)}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <input
+                                            type="date"
+                                            value={eventDate}
+                                            onChange={(e) => setEventDate(e.target.value)}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <input
+                                            type="text"
+                                            placeholder="主催者（申請者）名"
+                                            value={organizer}
+                                            onChange={(e) => setOrganizer(e.target.value)}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                    </div>
+                                </div>
+                                
+                                {/* 収入管理 */}
+                                <div className="mb-6">
+                                    <h2 className="text-lg font-bold mb-4">👥 収入（参加費）管理</h2>
+                                    <div className="flex flex-col gap-3 mb-4">
+                                        <input
+                                            type="text"
+                                            placeholder="参加者名"
+                                            value={newIncome.name}
+                                            onChange={(e) => setNewIncome({ ...newIncome, name: e.target.value })}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <input
+                                            type="number"
+                                            placeholder="金額（任意・後で一括設定可）"
+                                            value={newIncome.amount}
+                                            onChange={(e) => setNewIncome({ ...newIncome, amount: e.target.value })}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={handleAddIncome}
+                                                className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-lg font-bold"
+                                            >
+                                                {editingIncomeId ? '✓ 更新' : '+ 追加'}
+                                            </button>
+                                            {editingIncomeId && (
+                                                <button
+                                                    onClick={() => {
+                                                        setEditingIncomeId(null);
+                                                        setNewIncome({ name: '', amount: '' });
+                                                    }}
+                                                    className="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors text-lg font-bold"
+                                                >
+                                                    ✕
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    {/* 全員同一金額設定 */}
+                                    {incomes.length > 0 && (
+                                        <div className="mb-4 p-4 bg-yellow-50 border-2 border-yellow-300 rounded-lg">
+                                            <h3 className="text-base font-bold mb-2">⚡ 全員同一金額設定</h3>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="number"
+                                                    placeholder="金額"
+                                                    value={commonAmount}
+                                                    onChange={(e) => setCommonAmount(e.target.value)}
+                                                    className="flex-1 px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-yellow-500 text-lg"
+                                                />
+                                                <button
+                                                    onClick={applyCommonAmount}
+                                                    className="px-6 py-3 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors text-lg font-bold"
+                                                >
+                                                    一括設定
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {/* 一括印刷ボタン */}
+                                    {incomes.length > 0 && (
+                                        <div className="mb-4">
+                                            <button
+                                                onClick={handlePrintBatchReceipts}
+                                                className="w-full px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-lg font-bold"
+                                            >
+                                                🖨️ 全員分の領収書を一括印刷（A4縦・4人/枚）
+                                            </button>
+                                        </div>
+                                    )}
+                                    
+                                    {incomes.length > 0 && (
+                                        <div className="space-y-2">
+                                            {incomes.map(income => (
+                                                <div 
+                                                    key={income.id} 
+                                                    className={`border-2 rounded-lg p-4 ${income.receiptIssued ? 'bg-green-50 border-green-300' : 'border-gray-200'}`}
+                                                >
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <div className="flex-1">
+                                                            <div className="text-lg font-bold">
+                                                                {income.name}
+                                                                {income.receiptIssued && (
+                                                                    <span className="ml-2 text-green-600">✓</span>
+                                                                )}
+                                                            </div>
+                                                            <div className={`text-xl font-bold ${income.amount > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+                                                                {income.amount > 0 ? `¥${income.amount.toLocaleString()}` : '金額未設定'}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={() => startEditIncome(income)}
+                                                                className="px-3 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 text-sm"
+                                                            >
+                                                                編集
+                                                            </button>
+                                                            <button
+                                                                onClick={() => deleteIncome(income.id)}
+                                                                className="px-3 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 text-sm"
+                                                            >
+                                                                削除
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <button
+                                                            onClick={() => generateReceipt(income)}
+                                                            className={`py-3 rounded-lg text-white text-base font-bold ${
+                                                                income.receiptIssued 
+                                                                    ? 'bg-green-600 hover:bg-green-700' 
+                                                                    : 'bg-purple-600 hover:bg-purple-700'
+                                                            } transition-colors`}
+                                                        >
+                                                            {income.receiptIssued ? '🔄 再共有' : '📱 画像共有'}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handlePrintSingleReceipt(income)}
+                                                            className="py-3 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-base font-bold transition-colors"
+                                                        >
+                                                            🖨️ 印刷
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                {/* 支出管理 */}
+                                <div className="mb-6">
+                                    <h2 className="text-lg font-bold mb-4">🛒 支出（立替払い）管理</h2>
+                                    <div className="flex flex-col gap-3 mb-4">
+                                        <input
+                                            type="text"
+                                            placeholder="支払先"
+                                            value={newExpense.payee}
+                                            onChange={(e) => setNewExpense({ ...newExpense, payee: e.target.value })}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <input
+                                            type="text"
+                                            placeholder="品目"
+                                            value={newExpense.item}
+                                            onChange={(e) => setNewExpense({ ...newExpense, item: e.target.value })}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <input
+                                            type="number"
+                                            placeholder="金額"
+                                            value={newExpense.amount}
+                                            onChange={(e) => setNewExpense({ ...newExpense, amount: e.target.value })}
+                                            className="px-4 py-3 border-2 rounded-lg focus:outline-none focus:border-blue-500 text-lg"
+                                        />
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={handleAddExpense}
+                                                className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-lg font-bold"
+                                            >
+                                                {editingExpenseId ? '✓ 更新' : '+ 追加'}
+                                            </button>
+                                            {editingExpenseId && (
+                                                <button
+                                                    onClick={() => {
+                                                        setEditingExpenseId(null);
+                                                        setNewExpense({ payee: '', item: '', amount: '' });
+                                                    }}
+                                                    className="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors text-lg font-bold"
+                                                >
+                                                    ✕
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    {expenses.length > 0 && (
+                                        <div className="space-y-2">
+                                            {expenses.map(expense => (
+                                                <div 
+                                                    key={expense.id} 
+                                                    className="border-2 border-gray-200 rounded-lg p-4"
+                                                >
+                                                    <div className="flex justify-between items-start">
+                                                        <div className="flex-1">
+                                                            <div className="text-lg font-bold">{expense.payee}</div>
+                                                            <div className="text-gray-600">{expense.item}</div>
+                                                            <div className="text-xl text-red-600 font-bold">
+                                                                ¥{expense.amount.toLocaleString()}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={() => startEditExpense(expense)}
+                                                                className="px-3 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 text-sm"
+                                                            >
+                                                                編集
+                                                            </button>
+                                                            <button
+                                                                onClick={() => deleteExpense(expense.id)}
+                                                                className="px-3 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 text-sm"
+                                                            >
+                                                                削除
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                {/* 集計 */}
+                                <div className="bg-gray-50 p-4 rounded-lg mb-6">
+                                    <h2 className="text-lg font-bold mb-4">💰 収支集計</h2>
+                                    <div className="grid grid-cols-1 gap-4">
+                                        <div className="bg-green-100 p-4 rounded-lg">
+                                            <div className="text-sm text-gray-600 mb-1">収入合計</div>
+                                            <div className="text-3xl font-bold text-green-800">¥{totalIncome.toLocaleString()}</div>
+                                        </div>
+                                        <div className="bg-red-100 p-4 rounded-lg">
+                                            <div className="text-sm text-gray-600 mb-1">支出合計</div>
+                                            <div className="text-3xl font-bold text-red-800">¥{totalExpense.toLocaleString()}</div>
+                                        </div>
+                                        <div className={`p-4 rounded-lg ${balance >= 0 ? 'bg-blue-100' : 'bg-yellow-100'}`}>
+                                            <div className="text-sm text-gray-600 mb-1">{balance >= 0 ? '請求額' : '返納額'}</div>
+                                            <div className={`text-3xl font-bold ${balance >= 0 ? 'text-blue-800' : 'text-yellow-800'}`}>
+                                                ¥{Math.abs(balance).toLocaleString()}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                {/* A4報告書印刷ボタン */}
+                                <div className="flex justify-center">
+                                    <button
+                                        onClick={handlePrintReport}
+                                        className="w-full px-8 py-4 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xl font-bold"
+                                    >
+                                        🖨️ A4報告書を印刷
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* A4報告書印刷エリア */}
+                    <div className="print-area" id="print-report" data-print-active={printMode === 'report' ? 'true' : 'false'}>
+                        <div style={{ minHeight: '50vh' }}>
+                            <h1 style={{ fontSize: '24px', fontWeight: 'bold', textAlign: 'center', marginBottom: '24px' }}>イベント収支報告書</h1>
+                            
+                            <div style={{ marginBottom: '16px' }}>
+                                <p style={{ marginBottom: '8px' }}><strong>イベント名:</strong> {eventName}</p>
+                                <p style={{ marginBottom: '8px' }}><strong>開催日:</strong> {eventDate}</p>
+                                <p style={{ marginBottom: '8px' }}><strong>主催者:</strong> {organizer}</p>
+                            </div>
+                            
+                            <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>収入明細</h2>
+                            <div style={{ border: '1px solid #000', padding: '8px', marginBottom: '16px', fontSize: '14px' }}>
+                                {incomes.map((income, index) => (
+                                    <span key={income.id}>
+                                        {income.name}(¥{income.amount.toLocaleString()})
+                                        {index < incomes.length - 1 ? '、' : ''}
+                                    </span>
+                                ))}
+                                <div style={{ marginTop: '8px', fontWeight: 'bold', paddingTop: '8px', borderTop: '1px solid #000' }}>
+                                    合計: ¥{totalIncome.toLocaleString()}
+                                </div>
+                            </div>
+                            
+                            <h2 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>支出明細</h2>
+                            <table style={{ width: '100%', marginBottom: '16px', fontSize: '14px', borderCollapse: 'collapse' }}>
+                                <thead>
+                                    <tr>
+                                        <th style={{ border: '1px solid #000', padding: '8px', textAlign: 'left' }}>支払先</th>
+                                        <th style={{ border: '1px solid #000', padding: '8px', textAlign: 'left' }}>品目</th>
+                                        <th style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>金額</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {expenses.map(expense => (
+                                        <tr key={expense.id}>
+                                            <td style={{ border: '1px solid #000', padding: '8px' }}>{expense.payee}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px' }}>{expense.item}</td>
+                                            <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>¥{expense.amount.toLocaleString()}</td>
+                                        </tr>
+                                    ))}
+                                    <tr style={{ fontWeight: 'bold' }}>
+                                        <td style={{ border: '1px solid #000', padding: '8px' }} colSpan="2">合計</td>
+                                        <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>¥{totalExpense.toLocaleString()}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            
+                            <div style={{ background: '#f3f4f6', padding: '12px', marginBottom: '16px' }}>
+                                <p style={{ fontSize: '18px', fontWeight: 'bold' }}>
+                                    {balance >= 0 ? '請求額' : '返納額'}: ¥{Math.abs(balance).toLocaleString()}
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <div style={{ height: '45vh', borderTop: '2px dashed #999', paddingTop: '20px' }}>
+                            <h2 style={{ textAlign: 'center', fontSize: '18px', fontWeight: 'bold', marginBottom: '16px' }}>領収書貼付欄</h2>
+                            <div style={{ border: '2px solid #333', height: '90%', padding: '10px' }}>
+                                <p style={{ fontSize: '14px', color: '#666' }}>※ 立替払いの領収書をこちらに貼付してください</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {/* 個別領収書印刷エリア（A4縦・1人） */}
+                    <div className="print-area" id="print-single" data-print-active={printMode === 'single' ? 'true' : 'false'}>
+                        {printTargetIncome && (
+                            <div style={{ padding: '8mm 8mm' }}>
+                                <ReceiptHorizontal income={printTargetIncome} />
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* 一抬領収書印刷エリア（A4縦・4人/枚） */}
+                    <div className="print-area" id="print-batch" data-print-active={printMode === 'batch' ? 'true' : 'false'}>
+                        {receiptPages.map((pageIncomes, pageIndex) => (
+                            <div key={pageIndex} className="receipt-batch-page" style={{ padding: '8mm 8mm' }}>
+                                {pageIncomes.map((income) => (
+                                    <ReceiptHorizontal key={income.id} income={income} />
+                                ))}
+                            </div>
+                        ))}
+                    </div>
+                </>
+            );
+        };
+        
+        // Reactアプリケーションをレンダリング
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
