@@ -33,7 +33,7 @@
                 display: none !important;
             }
             
-            /* デフォルトですべての印刷エリアを表示 */
+            /* すべての印刷エリアを初期表示 */
             .print-area {
                 display: block !important;
                 visibility: visible !important;
@@ -41,18 +41,27 @@
                 width: 100% !important;
                 height: auto !important;
                 margin: 0 !important;
-                padding: 0 !important;
+                padding: 20px !important;
                 background: white !important;
+                left: auto !important;
+                top: auto !important;
+                z-index: auto !important;
             }
             
-            /* 非アクティブなエリアを非表示 */
+            /* 非アクティブなエリアのみ非表示 */
             .print-area[data-print-active="false"] {
                 display: none !important;
             }
             
+            /* アクティブなエリアを確実に表示 */
+            .print-area[data-print-active="true"] {
+                display: block !important;
+                visibility: visible !important;
+            }
+            
             @page {
                 size: A4 portrait;
-                margin: 10mm;
+                margin: 15mm;
             }
             
             .receipt-batch-page {
@@ -78,23 +87,32 @@
             font-family: 'Yu Mincho', 'Hiragino Mincho Pro', serif;
         }
         
-        /* 印刷エリアのデフォルトスタイル */
+        /* 印刷エリアのデフォルトスタイル（画面では非表示） */
         .print-area {
             display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            background: white;
-            z-index: 9999;
-            overflow: auto;
-            padding: 20px;
         }
         
-        /* 印刷準備中は表示 */
-        .print-area[data-print-active="true"] {
-            display: block;
+        /* 印刷時のみ表示 */
+        @media print {
+            /* 通常の画面要素を隠す */
+            .screen-only {
+                display: none !important;
+            }
+            
+            /* アクティブな印刷エリアのみ表示 */
+            .print-area[data-print-active="true"] {
+                display: block !important;
+                position: static !important;
+                width: 100% !important;
+                height: auto !important;
+                padding: 0 !important;
+                margin: 0 !important;
+            }
+            
+            /* その他の印刷エリアは非表示 */
+            .print-area[data-print-active="false"] {
+                display: none !important;
+            }
         }
         
         /* 横長領収書（A4縦・4人/枚） */
@@ -794,8 +812,18 @@
                     alert('基本情報をすべて入力してください');
                     return;
                 }
-                alert('PC環境での印刷を推奨します。スマホの場合は印刷プレビューで確認してください。');
-                window.print();
+                
+                // 印刷モードを設定
+                setPrintMode('report');
+                
+                // React の再レンダリングを待機してから印刷
+                setTimeout(() => {
+                    window.print();
+                    // 印刷ダイアログが閉じられた後にモードをクリア
+                    setTimeout(() => {
+                        setPrintMode(null);
+                    }, 500);
+                }, 300);
             };
             
             // 個別領収書印刷（PC推奨・削除予定）
