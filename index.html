@@ -210,9 +210,10 @@
 <body class="bg-gray-50">
     <div id="root"></div>
     
-    <script type="text/babel" data-type="module">
-        const { useState } = React;
-        
+    <script type="text/babel">
+  /** @jsxRuntime classic */
+  const { useState } = React;
+                
         const App = () => {
             // 基本情報（デフォルト値設定）
             const [eventName, setEventName] = useState('組合イベント');
